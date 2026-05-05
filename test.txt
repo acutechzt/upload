@@ -1,0 +1,12 @@
+cd H:\\Acutech2018\\v100\\usdk227c\\case_tp\\apps\\desktop\\calendar  
+make
+
+cd H:\\Acutech2018\\AT99165A\\usdk229w\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\AT99165A_V1.03_20200421\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\AT99165_20200527\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\usdk229w_AT99165_20200605\\case_tp\\apps\\desktop\\calendar
+
+ cd K:\\project\\at9836b_20200514\\at9836b\\usdk229w\\case_tp\\apps\\desktop\\calendar 
