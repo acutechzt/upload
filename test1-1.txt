@@ -1,0 +1,1098 @@
+cd H:\\Acutech2018\\v100\\usdk227c\\case_tp\\apps\\desktop\\calendar  
+make
+
+cd H:\\Acutech2018\\AT99165A\\usdk229w\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\AT99165A_V1.03_20200421\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\AT99165_20200527\\case_tp\\apps\\desktop\\calendar
+
+cd K:\\project\\usdk229w_AT99165_20200605\\case_tp\\apps\\desktop\\calendar
+
+ cd K:\\project\\at9836b_20200514\\at9836b\\usdk229w\\case_tp\\apps\\desktop\\calendar 
+
+下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /下面用簡潔條列說明這份程式如何把原始通道值換算成 lux（重點步驟、參數與演算法），便於理解或轉成流程圖。
+1.	原始量測與通道對應
+•	中斷處理或讀回時會從暫存區讀 13 字節，組成 4 個 24-bit signed 值：
+•	samples.ch0：UV channel
+•	samples.ch1：visible_high (vis_high)
+•	samples.ch2：IR (ir)
+•	samples.ch3：visible_low (vis_low)
+•	lux 計算範例呼叫： lux_call_example → get_lux(samples.ch1, samples.ch3, samples.ch2, &lk)
+1.	選擇使用哪組係數（high 或 low）
+•	在 get_lux():
+•	若 (vis_high > ADC_THRESHOLD) OR (ir > ADC_THRESHOLD) → 使用 coeff_high（NUMCOEFF_HIGH = 4，INPUT_FRACTION_HIGH = 7）
+•	否則 → 使用 coeff_low（NUMCOEFF_LOW = 9，INPUT_FRACTION_LOW = 15）
+•	ADC_THRESHOLD = 16000：用來判定是否為高光強情況以選取不同多項式。
+1.	多項式評估主流程 — eval_poly(x, y, input_fraction, output_fraction, num_coeff, kp)
+•	目的：用係數陣列 kp 計算一個多項式表達式，輸入為 x（vis_high 或 vis_low）與 y（ir），回傳整數 output（已包含 output_fraction 的位移尺度）。
+•	每個係數項 kp 含兩個欄位：
+•	kp->info：包含 x_order、y_order、sign、以及 shift 等資訊（以位元編碼）。
+•	get_x_order(info) 取 x 的次數
+•	get_y_order(info) 取 y 的次數
+•	get_sign(info) 決定正負
+•	高位位元用來算 shift（程式解碼後變成正/負位移）
+•	kp->mag：係數大小（mag）
+•	對每一個係數項：
+•	若 x_order = 0 且 y_order = 0：
+•	output += sign * mag << output_fraction （常數項）
+•	否：
+•	若 x_order > 0：
+•	x1 = poly_inner(x, input_fraction, mag, shift)
+•	若 x_order > 1， x2 = poly_inner(x, ...)（代表可有 x^2 項）
+•	否 x2 = 1
+•	若 y_order > 0：同理計算 y1（與 y2）
+•	output += sign * x1 * x2 * y1 * y2
+•	最後 output 取絕對值並回傳（若為負會變正）。
+1.	poly_inner 的行為（單項縮放與位移）
+•	poly_inner(input, fraction, mag, shift) 回傳：
+•	tmp = (input << fraction) / mag
+•	若 shift < 0： result = tmp >> -shift
+•	否： result = tmp << shift
+•	這裡是用左移 (<< fraction) 做固定小數點放大，再除以 mag（係數縮放），最後以 shift 作額外位移（可能是縮小或放大），目的是把浮點多項式轉成整數運算且維持位元位置。
+1.	係數表（lk）
+•	lk.coeff_high[]（4 項）與 lk.coeff_low[]（9 項）分別包含 (info, mag)。
+•	這些係數是廠方校正用來把感測器雙通道非線性響應轉換成接近真實 lux 的多項式係數。
+1.	輸出縮放（fixed-point → 實數）
+•	eval_poly 回傳的是整數型的 scaled value（包含 output_fraction 的縮放）。
+•	最終在 lux_call_example 中：
+•	lux = (float) get_lux(...) / (1 << LUX_OUTPUT_FRACTION)
+•	LUX_OUTPUT_FRACTION = 12 → 所以除以 4096 得到實數 lux。
+1.	整體計算公式（概念化）
+•	lux_scaled = Σ_i [ sign_i * F_i(x,y) ] （F_i 由 poly_inner 組合成 x^a * y^b 的整數縮放值）
+•	lux = |lux_scaled| / 2^{LUX_OUTPUT_FRACTION}
+1.	實作/數值注意事項
+•	x, y 在進入 poly_inner 前未做額外歸一化；input_fraction 代表內部固定小數點位數（HIGH 為 7，LOW 為 15），影響精度與數值範圍。
+•	mag 與 shift 搭配 info 字段提供每項不同的尺度與位移控制，避免浮點運算。
+•	使用兩組多項式（high/low）是為了在不同光度範圍提供更好精度與抗飽和/非線性補償。
+•	最後取絕對值（output < 0 -> output = -output）— 表示係數結果應該為正值，程式用 abs 保護負號。
+總結（流程簡要）
+1.	讀取 ch1(vis_high), ch3(vis_low), ch2(ir) 三個通道 raw 值。
+2.	根據 threshold 選 high 或 low 多項式與相應 input_fraction /
+end andy
